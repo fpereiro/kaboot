@@ -1,5 +1,5 @@
 /*
-kaboot - v0.0.0
+kaboot - v0.0.1
 
 Written by Federico Pereiro (fpereiro@gmail.com) and released into the public domain.
 
@@ -215,24 +215,18 @@ Please refer to README.md to see what this is about.
 
       if (kaboot.v.kObject (aStack.k) === false) return a.aReturn (aStack, false);
 
-      if (callType !== 'consecutive') {
-         aStack.k.connections.push (connection);
-         aStack.k.count.push (0);
-      }
-
-      if (connection === undefined) {
-         dale.stop_on (aStack.k.connections, true, function (v, k) {
-            var current = aStack.k.connections [aStack.k.connections.length - 1 - k];
-            if (current !== undefined) {
-               connection = current;
-               return true;
-            }
-         });
-      }
+      // Last connection has to be defined, if kaboot.do was run before.
+      if (connection === undefined && aStack.k.connections.length > 0) connection = aStack.k.connections [aStack.k.connections.length - 1];
 
       if (kaboot.v.connection (connection) === false) {
          if (connection === undefined) log ('Undefined connection passed to kaboot.do. If you are using nested kaboot.do calls, check that the outermost call has a connection defined.');
          return a.aReturn (aStack, false);
+      }
+
+      if (callType !== 'consecutive') {
+         // All connections are valid, undefined is overriden by previously defined connection.
+         aStack.k.connections.push (connection);
+         aStack.k.count.push (0);
       }
 
       var aStep;
@@ -298,7 +292,10 @@ kaboot.ssh = function ssh (command, connection) {
       label: 'command passed to kaboot.ssh'
    })) return false;
 
-   command = command.replace (/'/g, '\'');
+   if (connection.path) command = 'cd ' + connection.path + '; ' + command;
+
+   command = "'" + command.replace (/'/g, "\\'") + "'";
+
    var command = [
       'ssh',
       // http://stackoverflow.com/a/7122115
@@ -309,8 +306,6 @@ kaboot.ssh = function ssh (command, connection) {
       connection.host,
       command
    ];
-
-   if (connection.path) command.splice ([command.length - 1], 0, 'cd ' + connection.path + ';');
 
    return command.join (' ');
 }
@@ -417,35 +412,31 @@ path overrides path in connection
       if (teishi.type (command) === 'array') command = command.join (' ');
 
       var error;
-      var nestedness = 0;
       var localPath;
 
-      dale.stop_on (aStack.k.connections, true, function (v, k) {
-         var current = aStack.k.connections [aStack.k.connections.length - 1 - k];
-         if (current === undefined) return;
-         else if (kaboot.v.connection (current) === false) {
+      // We copy aStack.k.connections and then reverse it.
+      var connections = teishi.p (teishi.s (aStack.k.connections)).reverse ();
+
+      dale.stop_on (connections, true, function (v, k) {
+
+         if (kaboot.v.connection (v) === false) {
             error = true;
             return true;
          }
-         else if (current.host === undefined) {
-            if (nestedness === 0) {
+
+         else if (v.host === undefined) {
+            if (k === 0) {
                if (path) localPath = path;
-               else {
-                  if (current.path) localPath = path;
-               }
+               // If it is defined, setted, if it is undefined, nothing's changed.
+               else      localPath = v.path;
             }
+            // We stop the iteration
             return true;
          }
+
          else {
-            // XXX
-            //if (path && k === aStack.k.connections.length - 1) {
-            if (path && k === 0) {
-               // XXX explain that we make a copy to not affect the object for consecutive calls.
-               var otherCurrent = teishi.p (teishi.s (current));
-               otherCurrent.path = path;
-               command = kaboot.ssh (command, otherCurrent);
-            }
-            else command = kaboot.ssh (command, current);
+            if (path && k === 0) v.path = path;
+            if (k === 0 || (v.host !== connections [k - 1].host)) command = kaboot.ssh (command, v);
          }
       });
 
@@ -463,8 +454,11 @@ path overrides path in connection
          var stream = spawn (command);
       }
       else {
-         // notice how we only put cwd if aStack.k.connection.host is not defined
-         var stream = spawn (command.substr (0, command.indexOf (' ')), command.substr (command.indexOf (' ') + 1, command.length).split (' '), {cwd: localPath});
+         var first = command.substr (0, command.indexOf (' '));
+         var second = command.substr (command.indexOf (' ') + 1, command.length);
+         // Explain the dilemma that lead to this voodoo.
+         second = second.replace ("'", '').replace (/'$/, '').replace ("\\'", "'").replace (/\\'$/, "'");
+         var stream = spawn (first, second.split (' '), {cwd: localPath});
       }
 
       stream.stdout.on ('data', function (data) {
