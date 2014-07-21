@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+
+var path = require ('path');
+var fs = require ('fs');
+var kabootPath = path.join (path.dirname (fs.realpathSync (__filename)), '../kaboot');
+
+require (kabootPath);

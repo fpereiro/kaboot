@@ -1,5 +1,5 @@
 /*
-kaboot - v0.0.1
+kaboot - v0.1.0
 
 Written by Federico Pereiro (fpereiro@gmail.com) and released into the public domain.
 
@@ -13,13 +13,16 @@ Please refer to README.md to see what this is about.
    // Useful shorthand.
    var log = console.log;
 
-   // Require the 'net.
-   var http = require ('http');
-
    // Require the OS.
    var spawn = require ('child_process').spawn;
 
-   // Require astack, dale and teishi.
+   // Require the 'net.
+   var http = require ('http');
+
+   // Require path, for helper functions.
+   var path = require ('path');
+
+   // Require astack (asynchronous handling), dale (looping) and teishi (validation).
    var a = require ('astack');
    var dale = require ('dale');
    var teishi = require ('teishi');
@@ -32,7 +35,7 @@ Please refer to README.md to see what this is about.
    // *** INCLUDES ***
 
    // Copy-pasted from litre.combine (github.com/fpereiro/litre), because I didn't want to add litre as an extra dependency just for this function.
-   kaboot.combine = function (first, second) {
+   kaboot.extend = function (first, second) {
       if (teishi.stop ([{
          compare: arguments,
          to: ['array', 'object'],
@@ -46,7 +49,6 @@ Please refer to README.md to see what this is about.
       }])) return false;
 
       if (dale.stop_on (second, false, function (v, k) {
-
          if (teishi.type (v) !== 'array' && teishi.type (v) !== 'object') {
             // We don't override null or undefined values.
             if (v === null || v === undefined) return true;
@@ -68,30 +70,30 @@ Please refer to README.md to see what this is about.
       else return first;
    }
 
-   kaboot.extend = function (extensions) {
-      if (teishi.type (extensions) === 'string') extensions = [extensions];
-      if (teishi.stop ([{
-         compare: extensions,
-         to: 'array',
-         test: teishi.test.type,
-         label: 'extensions argument passed to kaboot.extend'
-      }, {
-         compare: extensions,
-         to: 'string',
-         test: teishi.test.type,
-         multi: 'each',
-         label: 'elements of extensions argument passed to kaboot.extend'
-      }])) return false;
+   // *** PATH HELPER METHODS ***
 
-      var This = this;
-      dale.do (extensions, function (v) {
-         This = kaboot.combine (This, require (v));
-      });
+   function pathMethodWrapper (method) {
+      return function () {
+         if (teishi.stop ({
+            compare: arguments,
+            to: 'string',
+            test: teishi.test.type,
+            multi: 'each',
+            label: 'arguments passed to kaboot.join'
+         })) return false;
+         return method.apply (method, arguments);
+      }
    }
+
+   kaboot.join = pathMethodWrapper (path.join);
+   kaboot.last = pathMethodWrapper (path.basename);
+   kaboot.root = pathMethodWrapper (path.dirname);
 
    // *** VALIDATION ***
 
    kaboot.v = {};
+
+   // A kaboot connection is an object with keys 'host', 'key' and 'path', which can be either strings or undefined. If 'host' is defined, so should be 'key'.
 
    kaboot.v.connection = function (connection) {
       if (teishi.stop ({
@@ -122,6 +124,14 @@ Please refer to README.md to see what this is about.
       }]);
    }
 
+   /*
+      A kObject (the object placed on aStack.k by kaboot.do) is an object with keys 'connections', 'count', 'log' and 'last_log':
+         - connections is an array containing kaboot connections (but these are not validated in this function).
+         - count is an array with integers (but in this function we only validate that it is an array).
+         - log is an object where kaboot.do stores the outputs of the kFunctions.
+         - last_log is where kaboot.do retrieves the logs produced by the last kFunction executed. It can have any value.
+   */
+
    kaboot.v.kObject = function (kObject) {
       if (teishi.stop ([{
          compare: kObject,
@@ -135,7 +145,8 @@ Please refer to README.md to see what this is about.
          label: 'keys of aStack.k'
       }])) return false;
 
-      return (! teishi.stop ([{
+      // last_log can hold any value, so we don't validate it.
+      return ! teishi.stop ([{
          compare: kObject.connections,
          to: 'array',
          test: teishi.test.type,
@@ -150,231 +161,194 @@ Please refer to README.md to see what this is about.
          to: 'object',
          test: teishi.test.type,
          label: 'aStack.k.log'
-      // last_log can hold any value, so we don't validate it.
-      }]));
+      }]);
    }
 
-   /*
+   // *** KABOOT.HIT ***
 
-   count
-   log (in object, and stream)
-   execute
-   stop on false
+   kaboot.hit = function (aStack, options, returnAnyResponse) {
 
-   */
-
-   kaboot.do = function (aStack) {
-      // If the aStack is undefined, we initialize it.
-      if (aStack === undefined) {
-         aStack = {aPath: []}
-      }
-
+      // Validation
       if (a.validate.aStack (aStack) === false) return false;
 
-      // Besides the aStack and the label, the arguments are an optional connection object and a mandatory aPath/aStep (which is an array). There's a possible fourth argument that we will discuss in a moment.
-      if (teishi.type (arguments [1]) === 'object') {
-         // We set variables for the connection and the aPath.
-         var connection = arguments [1];
-         var aPath = arguments [2];
-      }
-      else var aPath = arguments [1];
+      if (teishi.stop ([{
+         compare: options,
+         to: 'object',
+         test: teishi.test.type,
+         label: 'options passed to kaboot.hit'
+      }, {
+         compare: options.host,
+         to: ['string', 'undefined'],
+         test: teishi.test.type,
+         multi: 'one_of',
+         label: 'options.host passed to kaboot.hit'
+      }, {
+         compare: options.port,
+         to: ['number', 'undefined'],
+         test: teishi.test.type,
+         multi: 'one_of',
+         label: 'options.port passed to kaboot.hit'
+      }, {
+         compare: options.path,
+         to: ['string', 'undefined'],
+         test: teishi.test.type,
+         multi: 'one_of',
+         label: 'options.path passed to kaboot.hit'
+      }, {
+         compare: options.method,
+         // Taken from http://www.w3.org/Protocols/rfc2616/rfc2616-sec9.html
+         to: ['get', 'head', 'post', 'put', 'delete', 'trace', 'connect', undefined],
+         multi: 'one_of',
+         label: 'options.method passed to kaboot.hit'
+      }, {
+         compare: options.headers,
+         to: ['object', 'undefined'],
+         test: teishi.test.type,
+         multi: 'one_of',
+         label: 'options.headers passed to kaboot.hit'
+      }, {
+         compare: dale.do (options.headers, function (v, k) {return k}),
+         // http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
+         to: ['accept', 'accept-charset', 'accept-encoding', 'accept-language', 'accept-datetime', 'authorization', 'cache-control', 'connection', 'cookie', 'content-length', 'content-md5', 'content-type', 'date', 'expect', 'from', 'host', 'if-match', 'if-modified-since', 'if-none-match', 'if-range', 'if-unmodified-since', 'max-forwards', 'origin', 'pragma', 'proxy-authorization', 'range', 'referer', 'te', 'user-agent', 'via', 'warning', 'x-requested-with', 'dnt', 'x-forwarded-for', 'x-forwarded-for:', 'x-forwarded-proto', 'front-end-https', 'x-att-deviceid', 'x-wap-profile', 'proxy-connection', 'x-github-event', 'x-github-delivery'],
+         multi: 'each_of',
+         label: 'keys of options.headers passed to kaboot.hit'
+      }, {
+         compare: options.headers,
+         to: 'string',
+         test: teishi.test.type,
+         multi: 'each',
+         label: 'values of options.headers passed to kaboot.hit'
+      }, {
+         compare: options.body,
+         to: ['string', 'undefined'],
+         test: teishi.test.type,
+         multi: 'one_of',
+         label: 'options.body passed to kaboot.hit'
+      }])) return a.return (aStack, false);
 
-      /*
-         We define which type of call we are. It can be three things:
-            - 'initial' if it is the initial call to kaboot.do
-            - 'consecutive if it's neither initial nor a recursive call. We'll mark this with a true argument appended after the two or three arguments (aStack, connection (which is optional) and aStep/aPath)
-            - 'recursive', if the caller of kaboot.do is kaboot.do
-      */
-
-      var callType;
-      if (aStack.k === undefined) callType = 'initial';
-      else if (arguments [arguments.length - 1] === true) callType = 'consecutive';
-      else callType = 'recursive';
-
-      // We validate the aPath.
-      if (a.validate.aPath (aPath) === false) return a.aReturn (aStack, false);
-
-      if (aPath.length === 0) {
-      // Here we are at an end (compare with the beginning below).
-         if (callType !== 'initial') {
-            aStack.k.count.pop ();
-            aStack.k.connections.pop ();
+      if (options.port) {
+         if (options.port < 1 || options.port > 65535 || (! teishi.is_integer (options.port))) {
+           log ('Port must be an integer in the range 1-65535');
+           return a.return (aStack, false);
          }
-         // If the callType is 'initial', it means that we're dealing with a single kaboot.do call with an empty aStep/aPath. Hence, no aStack.k to work with.
-         return a.aReturn (aStack, aStack.last);
       }
 
-      if (callType === 'initial') {
-         aStack.k = {
-            connections: [],
-            count: [],
-            log: {},
-            last_log: undefined,
+      if (options.body !== undefined && method !== 'post' && method !== 'put') {
+         log ('kaboot.hit received an options.body but options.method isn\'t either "post" or "put".');
+         return a.return (aStack, false);
+      }
+
+      // We set three elements on aStack.k.last_log: 1) stdout, to store all the data sent by the response, 2) error, to store possible errors in the request, and result, to hold the result of the request (an array with the response's status code, status headers and body).
+      aStack.k.last_log = {
+         stdout: '',
+         error: '',
+         result: undefined
+      }
+
+      if (options.body !== undefined && options.headers && options.headers ['content-length'] === undefined) {
+         // If we have options.body and options.headers.content-length is not specified, we set it.
+         options.headers ['content-length'] = body.length;
+      }
+
+      // We change host to hostname, since it's the preferred option (http://nodejs.org/api/http.html#http_http_request_options_callback).
+      options.hostname = options.host;
+      delete options.host;
+
+      // We fire the request.
+      var request = http.request (options, function (response) {
+
+         if (response.statusCode >= 300 && response.statusCode < 400) {
+         // If we are here, we're dealing with a redirect
+
+            // We need a location to be redirected somewhere. Otherwise, we return false.
+            if (response.headers.location === undefined) return a.return (aStack, false);
+
+            // We set the redirect location as the host, and the path as a single slash.
+            options.host = response.headers.location;
+            options.path = '/';
+
+            // If the status code is 303, we need to repeat the request but using the 'get' method.
+            if (response.statusCode === 303) options.method = 'get';
+
+            // kaboot.hit calls itself.
+            kaboot.hit (aStack, options, returnAnyResponse);
+            // We return to exit the execution flow in case of a redirection. Further actions are taken by the call to kaboot.hit above. By doing this, we avoid to wrap the rest of this function in an else clause.
+            return;
          }
-      }
 
-      if (kaboot.v.kObject (aStack.k) === false) return a.aReturn (aStack, false);
+         // This is the result that will be returned if the request was considered successful.
+         var result = [response.statusCode, response.headers, ''];
 
-      // Last connection has to be defined, if kaboot.do was run before.
-      if (connection === undefined && aStack.k.connections.length > 0) connection = aStack.k.connections [aStack.k.connections.length - 1];
+         response.on ('data', function (data) {
+            // We send the data to three places: 1) stdout, 2) aStack.k.last_log.stdout, and 3) the third element of result.
+            log (data + '');
+            aStack.k.last_log.stdout += data;
+            result [2] += data;
+         });
 
-      if (kaboot.v.connection (connection) === false) {
-         if (connection === undefined) log ('Undefined connection passed to kaboot.do. If you are using nested kaboot.do calls, check that the outermost call has a connection defined.');
-         return a.aReturn (aStack, false);
-      }
-
-      if (callType !== 'consecutive') {
-         // All connections are valid, undefined is overriden by previously defined connection.
-         aStack.k.connections.push (connection);
-         aStack.k.count.push (0);
-      }
-
-      var aStep;
-      if (teishi.type (aPath [0]) === 'function' || teishi.type (aPath [0]) === 'string') {
-         aStep = aPath;
-         aPath = [];
-      }
-      else aStep = aPath.shift ();
-
-      var label;
-      if (teishi.type (aStep [0]) === 'string') label = aStep.shift ();
-
-      if (a.validate.aStep (aStep) === false) {
-         return a.aReturn (aStack, false);
-      }
-
-      aStack.k.count [aStack.k.count.length - 1] ++;
-
-      var step = aStack.k.count.join ('.');
-
-      log (((step + ':').asBold.asUnderscore.red + (' ' + (label ? label : 'Kaboot executing step')).asBold.asUnderscore.magenta));
-
-      a.aCond (aStack, aStep, {
-         false: [function (aStack) {
-            aStack.k.log [teishi.s (step)] = label ? [label, aStack.k.last_log] : aStack.k.last_log;
-            a.aReturn (aStack, false);
-         }],
-         default: [function (aStack) {
-            aStack.k.log [teishi.s (step)] = label ? [label, aStack.k.last_log] : aStack.k.last_log;
-            kaboot.do (aStack, aPath, true);
-         }]
+         response.on ('end', function () {
+            aStack.k.last_log.result = result;
+            if (returnAnyResponse !== true && response.statusCode >= 400) {
+               // Unless returnAnyResponse was set to true, if we get a 4xx or 5xx status code, we consider the request not to be successful. Hence, we return false.
+               return a.return (aStack, false);
+            }
+            // We consider the request to be successful, hence we return the result.
+            return a.return (aStack, result);
+         });
       });
+
+      request.on ('error', function (error) {
+         // If there's an error, we send it to two places: 1) stdout, and 2) aStack.k.last_log.error
+         aStack.k.last_log.error = error;
+         return a.return (aStack, false);
+      });
+
+      // We send the body of the request (if we have one) and finish the request.
+      if (options.body !== undefined) request.write (options.body);
+      request.end ();
    }
 
-/*
+   // *** KABOOT.RUN ***
 
-Most of the unix commands we want to run will be commands in remote servers. This allows us to run a kaboot script in a single server (your computer counts as a server!) that can deploy or monitor several servers.
-
-The good thing is that remote unix commands are just a special kind of ordinary unix commands, since we can invoke the ssh command and pass it the remote command.
-
-We'll now write a function ssh that receives an unix command plus connection parameters and returns a properly formatted unix command.
-
-There are many ways to handle authentication, but they fall into two approaches:
-- Applying configuration changes on the target server (such as adding a ssh key in .ssh/authorized_keys or setting a password).
-- Giving access information to the source server (namely, providing a .pem key for accessing the target server).
-
-I'm going to use the second approach, for I consider it cleaner. For one, it applies the lean thinking principle of pull. Here, kaboot pulls info (the .pem file) from the source of that information. In the other approach, we push information about the source server onto the target server. When we do that, we now have to keep state of what access info is stored in the target server. With our approach, we can either give the source server access to the .pem file when it needs it. To ensure access, grant the .pem file. To revoke access, remove access to the .pem. There's no state to be held in the target server, except for the .pem that grants access to it.
-
-Also, the first time that the source server connects to the target server, ssh will ask if we trust that server, to ensure that we don't fall prey to a man-in-the-middle attack. While this indeed has a purpose, it's standard practice to blindly enter "yes" manually, so instead of that, we're going to automate that standard practice by overriding the default to the StrictHostKeyChecking option. If there's a better standard practice that can be automated, I will be glad to change this in the future.
-
-Besides placing the hostname and the keyPath, ssh must quote it so that the shell of the source server doesn't modify it before sending it to the target server. Of course, I assume that you're passing literal commands to the target server and you're not relying on local variables within the source server; if you have variables that affect the command, they should be part of your kaboot code. We will wrap the command between double quotes and escape any double quotes already present in the command.
-
-One further note: ssh expects that the file permissions of the key should be strict enough. While we could automatically chmod this file in this function to always ensure this, I believe it's more elegant to do it when the .pem file is created. Thus, that operation belongs elsewhere, and the ssh function will take it for granted.
-
-*/
-
-kaboot.ssh = function ssh (command, connection) {
-   if (kaboot.v.connection (connection) === false) return false;
-   if (teishi.stop ({
-      compare: command,
-      to: 'string',
-      test: teishi.test.type,
-      label: 'command passed to kaboot.ssh'
-   })) return false;
-
-   if (connection.path) command = 'cd ' + connection.path + '; ' + command;
-
-   command = "'" + command.replace (/'/g, "\\'") + "'";
-
-   var command = [
-      'ssh',
-      // http://stackoverflow.com/a/7122115
-      '-t -t',
-      '-i',
-      connection.key,
-      '-o StrictHostKeyChecking=no',
-      connection.host,
-      command
-   ];
-
-   return command.join (' ');
-}
-
-   kaboot.path = function () {
+   // This is a helper function to convert an OS call into a remote OS call (or into a nested remote call), using ssh.
+   // Notice that this function is a synchronous, run-of-the-mill function that simply does some string processing.
+   kaboot.ssh = function (command, connection) {
+      if (kaboot.v.connection (connection) === false) return false;
       if (teishi.stop ({
-         compare: arguments,
-         to: ['array', 'string'],
+         compare: command,
+         to: 'string',
          test: teishi.test.type,
-         multi: 'each_of',
-         label: 'Arguments passed to kaboot.path'
+         label: 'command passed to kaboot.ssh'
       })) return false;
 
-      var output = '';
+      // We wrap the command with a path. If command is 'ls -l' and path is '/home', command will now be: 'cd /home; ls -l'
+      if (connection.path) command = 'cd ' + connection.path + '; ' + command;
 
-      dale.stop_on (arguments, false, function (v, k) {
-         if (teishi.type (v) === 'array') {
-            v = kaboot.path (v);
-            if (v === false) {
-               output = false;
-               return false;
-            }
-         }
+      // Wrap the command in single quotes, and escape the single quotes within the command.
+      command = "'" + command.replace (/'/g, "\\'") + "'";
 
-         if (output.length === 0) output += v;
-         else if (output [output.length - 1] !== '/') {
-            if (v [v.length - 1] !== '/') output += '/' + v;
-            else output += v;
-         }
-         else {
-            if (v [v.length - 1] !== '/') output += v;
-            else output += v.substr (1, v.length);
-         }
-      });
+      // We convert the command into a ssh command. More detail about this is given at the very end of example #1 in the README.
+      var command = [
+         'ssh',
+         // http://stackoverflow.com/a/7122115
+         '-t -t',
+         '-i',
+         connection.key,
+         '-o StrictHostKeyChecking=no',
+         connection.host,
+         command
+      ];
 
-      return output;
+      return command.join (' ');
    }
 
-/*
+   // This function is the most important of the library, with the exception of kaboot.do.
 
-if connection, pass it to kaboot.ssh
-
-can be string, array, or two arrays
-if it's string, string is command
-if it's array, command is array merged with spaces. array must be array of strings.
-if it's two arrays, first is an array of strings, which is cded before running the command.
-
-create logging object or find it in the aStack.
-
-log command.
-run command.
-send outputs to stdout/stderr and logging object.
-
-aReturns false or last_log
-
-nested connections. undefined is ignored. {} calls toplevel.
-
-path overrides path in connection
-
-*/
-
-   // return true anyway vs return false on error code!
-   kaboot.run = function run (aStack) {
-
-      // XXX parametrize
-      var verbose = true;
+   kaboot.run = function (aStack) {
 
       if (a.validate.aStack (aStack) === false) return false;
 
+      // The arguments are an optional path (which must be a string) and a mandatory command (which can be either a string or an array of strings.
       if (arguments [2] !== undefined) {
          var path = arguments [1];
          var command = arguments [2];
@@ -407,7 +381,9 @@ path overrides path in connection
          test: teishi.test.type,
          multi: 'each',
          label: 'elements of path argument passed to kaboot.run',
-      }])) return a.aReturn (aStack, false);
+      }])) return a.return (aStack, false);
+
+      if (teishi.type (path) === 'array') path = kaboot.join.apply (kaboot.join, path);
 
       if (teishi.type (command) === 'array') command = command.join (' ');
 
@@ -440,9 +416,10 @@ path overrides path in connection
          }
       });
 
-      if (error) return a.aReturn (aStack, false);
+      if (error) return a.return (aStack, false);
 
-      if (verbose) log (('\nRunning unix command: ' + command + '\n').asBold.blue);
+      if (arguments [arguments.length - 1] === true) log (('\nRunning unix command: ' + command + '\n').asBold.blue);
+      if (true) log (('\nRunning unix command: ' + command + '\n').asBold.blue);
 
       aStack.k.last_log = {
          stdout: '',
@@ -456,7 +433,7 @@ path overrides path in connection
       else {
          var first = command.substr (0, command.indexOf (' '));
          var second = command.substr (command.indexOf (' ') + 1, command.length);
-         // Explain the dilemma that lead to this voodoo.
+         // Explain the dilemma that led to this voodoo.
          second = second.replace ("'", '').replace (/'$/, '').replace ("\\'", "'").replace (/\\'$/, "'");
          var stream = spawn (first, second.split (' '), {cwd: localPath});
       }
@@ -477,7 +454,7 @@ path overrides path in connection
 
       var complete = function (value_returned) {
          if (wait_for > 1) wait_for--;
-         else a.aReturn (aStack, value_returned);
+         else a.return (aStack, value_returned);
       }
 
       stream.on ('error', function (error) {
@@ -502,109 +479,239 @@ path overrides path in connection
       });
    }
 
-   // XXX The stuff below must go in libraries
+   kaboot.do = function (aStack) {
 
-   kaboot.unix = {};
+      // If the aStack is undefined, we initialize it.
+      aStack = a.createIf (aStack);
 
-   kaboot.unix.scp = function (aStack, options) {
+      if (a.validate.aStack (aStack) === false) return false;
 
-      // VALIDATION
+      // Besides the aStack and the label, the arguments are an optional connection object and a mandatory aPest (which is an array). There's a possible fourth argument that we will discuss in a moment.
+      if (teishi.type (arguments [1]) !== 'array') {
+         // We set variables for the connection and the aPest.
+         var connection = arguments [1];
+         var aPest = arguments [2];
+      }
+      else var aPest = arguments [1];
 
-      if (teishi.stop ([{
-         compare: options,
-         to: 'object',
-         test: teishi.test.type,
-         label: 'options passed to kaboot.unix.scp'
-      }, {
-         compare: dale.do (options, function (v, k) {return k}),
-         to: ['from', 'to', 'recursive'],
-         multi: 'each_of',
-         label: 'Keys within options passed to kaboot.unix.scp'
-      }, {
-         compare: [options.from, options.to],
-         to: ['string', 'object'],
-         test: teishi.test.type,
-         multi: 'each_of',
-         label: 'options.from and options.to passed to kaboot.unix.scp'
-      }, {
-         compare: options.recursive,
-         to: [true, false, undefined],
-         multi: 'one_of',
-         label: 'options.recursive passed to kaboot.unix.scp'
-      }])) return a.aReturn (aStack, false);
+      var Return = function (aStack, value) {
+         if (aStack.k) {
+            aStack.k.count.pop ();
+            aStack.k.connections.pop ();
+         }
+         a.return (aStack, value);
+         return value;
+      }
 
-      var remote;
-      if (teishi.type (options.from) === 'string') remote = options.to;
-      else if (teishi.type (options.to) === 'string') {
-         remote = options.from;
+      // VALIDATION!!!
+
+      /*
+         We define which type of call we are. It can be three things:
+            - 'initial' if it is the initial call to kaboot.do
+            - 'consecutive if it's neither initial nor a recursive call. We'll mark this with a true argument appended after the two or three arguments (aStack, connection (which is optional) and an aPest (aStep/aPath))
+            - 'recursive', if the caller of kaboot.do is kaboot.do
+      */
+
+
+      var callType;
+      if (aStack.k === undefined) callType = 'initial';
+      else if (arguments [arguments.length - 1] === true) callType = 'consecutive';
+      else callType = 'recursive';
+
+      // We validate the aPest.
+      if (a.validate.aPest (aPest) === false) return Return (aStack, false);
+
+      if (aPest.length === 0) {
+      // Here we have no more aSteps in our aPath. If we're here and the call is not recursive, it means that the outermost k.do was called with an empty array. If we're here and the call is recursive, we need to pop the count and the connections.
+         return Return (aStack, aStack.last);
+      }
+
+      if (callType === 'initial') {
+         aStack.k = {
+            connections: [],
+            count: [],
+            log: {},
+            last_log: undefined,
+         }
+      }
+
+      if (kaboot.v.kObject (aStack.k) === false) return Return (aStack, false);
+
+      // Last connection has to be defined, if kaboot.do was run before.
+      if (connection === undefined && aStack.k.connections.length > 0) connection = aStack.k.connections [aStack.k.connections.length - 1];
+
+      if (kaboot.v.connection (connection) === false) {
+         if (connection === undefined) log ('Undefined connection passed to kaboot.do. If you are using nested kaboot.do calls, check that the outermost call has a connection defined.');
+         return Return (aStack, false);
+      }
+
+      if (callType !== 'consecutive') {
+         // All connections are valid, undefined is overriden by previously defined connection.
+         aStack.k.connections.push (connection);
+         aStack.k.count.push (0);
+      }
+
+      var aPath = a.pestToPath (aPest);
+      var aStep = aPath.shift ();
+
+      var label;
+      if (teishi.type (aStep [0]) === 'string') label = aStep.shift ();
+
+      if (a.validate.aStep (aStep) === false) {
+         return Return (aStack, false);
+      }
+
+      aStack.k.count [aStack.k.count.length - 1] ++;
+
+      var step = aStack.k.count.join ('.');
+
+      log (((step + ':').asBold.asUnderscore.red + (' ' + (label ? label : 'Kaboot executing step')).asBold.asUnderscore.magenta));
+
+      a.cond (aStack, aStep, {
+         false: [function (aStack) {
+            aStack.k.log [teishi.s (step)] = label ? [label, aStack.k.last_log] : aStack.k.last_log;
+            return Return (aStack, false);
+         }],
+         default: [function (aStack) {
+            aStack.k.log [teishi.s (step)] = label ? [label, aStack.k.last_log] : aStack.k.last_log;
+            kaboot.do (aStack, aPath, true);
+         }]
+      });
+   }
+
+   kaboot.cond = function (aStack) {
+
+      var connection;
+      var aCond;
+      var aMap;
+
+      if (arguments.length === 4) {
+         connection = arguments [1];
+         aCond = arguments [2];
+         aMap = arguments [3];
       }
       else {
-         log ('options.from or options.to passed to kaboot.unix.scp must be a string path!');
-         return a.aReturn (aStack, false);
+         aCond = arguments [1];
+         aMap = arguments [2];
       }
 
-      if (teishi.stop ([{
-         compare: remote,
-         to: 'object',
-         test: teishi.test.type,
-         label: 'remote object (either options.from or options.to) passed to kaboot.unix.scp'
-      }, {
-         compare: dale.do (remote, function (v, k) {return k}),
-         to: ['host', 'key', 'path'],
-         multi: 'each_of',
-         label: 'Keys of remote object (either options.from or options.to) passed to kaboot.unix.scp'
-      }, {
-         compare: remote,
-         to: 'string',
-         test: teishi.test.type,
-         multi: 'each',
-         label: 'remote.host, remote.key and remote.path within remote object passed to kaboot.unix.scp'
-      }])) return a.aReturn (aStack, false);
+      dale.do (aMap, function (v, k) {
+         aMap [k] = [kaboot.do, v];
+      });
 
-      var command = ['scp', '-v', '-o StrictHostKeyChecking=no', '-i', remote.key];
-      if (options.recursive) command.push ('-r');
-      if (teishi.type (options.from) === 'object') {
-         options.from = options.from.host + ':' + options.from.path;
-      }
-      else {
-         options.to = options.to.host + ':' + options.to.path;
+      // We don't validate the arguments because kaboot.do and a.cond will do that for us.
+      kaboot.do (aStack, connection, [a.cond, [kaboot.do, aCond], aMap]);
+   }
+
+   kaboot.fork = function (aStack) {
+      var connection;
+      var aPest;
+
+      if (arguments.length === 3) {
+         connection = arguments [1];
+         aPest = arguments [2];
       }
 
-      command = command.concat ([options.from, options.to]);
+      else aPest = arguments [1];
 
-      kaboot.do (aStack, [
-         ['Perform scp', kaboot.run, command]
+      var aPath = a.pestToPath (aPest);
+
+      kaboot.do (aStack, connection, [
+         [a.fork, aPath],
+         [function (aStack) {
+            var isError = dale.stop_on (aStack.last, true, function (v) {
+               if (v === false) return true;
+            });
+            if (isError) a.return (aStack, false);
+            else a.return (aStack, aStack.last);
+         }]
       ]);
    }
 
-   kaboot.unix.tar = function (aStack, options) {
-      if (teishi.stop ({
-         compare: options,
-         to: 'object',
-         test: teishi.test.type,
-         label: 'options passed to kaboot.unix.tar'
-      })) return a.aReturn (aStack, false);
+   kaboot.cFork = function (aStack, connections, aPest) {
+      var aPath = a.pestToPath (aPest);
 
+      var to = [];
+      dale.do (connections, function (v) {
+         to.push ([kaboot.do, v, aPath]);
+      });
+
+      kaboot.fork (aStack, to);
+   }
+
+   kaboot.test = function (aStack, test, actions) {
+      kaboot.cond (aStack, test, {
+         true: [],
+         false: actions
+      });
+   }
+
+   kaboot.fire = function (actions, apres) {
       if (teishi.stop ([{
-         compare: options.to,
-         to: 'string',
+         compare: actions,
+         to: ['object', 'array'],
          test: teishi.test.type,
-         label: 'options.to passed to kaboot.unix.tar'
+         multi: 'one_of',
+         label: 'actions parameter passed to kaboot.fire'
       }, {
-         compare: [options.compress, options.extract],
-         to: ['string', 'undefined'],
+         compare: apres,
+         to: ['object', 'array', 'undefined'],
          test: teishi.test.type,
-         multi: 'each_of',
-         label: 'options.compress, options.extract'
-      }, {
-         compare: teishi.test.type (options.compress) === teishi.test.type (options.extract),
-         to: false,
-         label: 'options.compress and options.extract can\'t be defined simulataneously.'
-      }])) return a.aReturn (aStack, false);
+         multi: 'one_of',
+         label: 'apres parameter passed to kaboot.fire'
+      }])) return false;
 
-      if (options.compress) kaboot.do (aStack, [kaboot.run, ['tar', 'czvf', options.to, options.compress]]);
-      else                  kaboot.do (aStack, [kaboot.run, ['tar', 'xzvf', options.extract, '-C', options.to]]);
-      // XXX add dvzf check
+      var action;
+      if (teishi.type (actions) === 'array') {
+         var singleAction = true;
+         action = actions;
+      }
+      else action = actions [process.argv [2]];
+
+      if (action === undefined) {
+         log ('Invalid action', process.argv [2]);
+         log ('Possible actions are:', dale.do (actions, function (v, k) {return k}).join (', '));
+         return false;
+      }
+
+      if (a.validate.aPest (action) === false) return false;
+
+      function replaceAtSignWithValue (kPath) {
+         dale.do (kPath, function (v, k) {
+         // v is each kStep
+            dale.do (v, function (v2, k2) {
+            // v2 are the elements of each kStep
+               if (teishi.type (v2) === 'string' && v2.match (/^@[\d]+$/)) {
+                  // @1 is the fourth argument, hence we sum two, since the fourth argument of a zero-indexed array is 3. However, if singleAction is set to true, this is one less, because we didn't use the third argument to specify which action to run.
+                  kPath [k] [k2] = process.argv [parseInt (v2.match (/^@[\d]+$/) [0].replace ('@', '')) + (singleAction ? 1 : 2)];
+               }
+            });
+         });
+         // Notice how the function, without returning anything, modifies its inputs. This is possible because javascript is pass-by-reference when an argument is an object or an array (and we'll always pass an array (more precisely, a kPath) to this function).
+      }
+
+      action = a.pestToPath (action);
+      replaceAtSignWithValue (action);
+
+      if (teishi.type (apres) === 'array') {
+         apres = {default: apres};
+      }
+
+      var apresStepCount = 0;
+
+      dale.stop_on (apres, false, function (v, k) {
+         if (a.validate.aPest (v) === false) return false;
+         apres [k] = a.pestToPath (v);
+         replaceAtSignWithValue (v);
+         dale.do (v, function () {
+            apresStepCount++;
+         });
+      });
+
+      if (apresStepCount === 0) {
+         kaboot.do (undefined, {}, action);
+      }
+      else kaboot.cond (undefined, {}, action, apres);
    }
 
 }).call (this);
